@@ -161,8 +161,54 @@ EOF
     else
         echo "ℹ️  Not Debian/Ubuntu, skipping default editor setup"
     fi
+    else
+        echo "ℹ️  Could not detect OS, skipping default editor setup"
+    fi
+
+# 4. Set passwordless sudo for sudo group on Debian/Ubuntu
+echo "🔐 Setting up passwordless sudo for sudo group..."
+
+# Detect Debian/Ubuntu
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    if [ "$ID" = "debian" ] || [ "$ID" = "ubuntu" ]; then
+        # Check if user is in sudo group
+        if groups | grep -q "\bsudo\b" || [ "$EUID" -eq 0 ]; then
+            SUDOERS_FILE="/etc/sudoers.d/99-passwordless-sudo"
+            
+            # Check if already configured
+            if [ -f "$SUDOERS_FILE" ] && grep -q "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" "$SUDOERS_FILE" 2>/dev/null; then
+                echo "ℹ️  Passwordless sudo already configured"
+            else
+                # Create sudoers file
+                SUDOERS_CONTENT="%sudo ALL=(ALL:ALL) NOPASSWD: ALL"
+                
+                if [ "$EUID" -eq 0 ]; then
+                    # Running as root
+                    echo "$SUDOERS_CONTENT" > "$SUDOERS_FILE"
+                    chmod 440 "$SUDOERS_FILE"
+                    echo "✅ Passwordless sudo configured for sudo group"
+                else
+                    # Need sudo to create the file
+                    if sudo -n true 2>/dev/null; then
+                        echo "$SUDOERS_CONTENT" | sudo tee "$SUDOERS_FILE" > /dev/null
+                        sudo chmod 440 "$SUDOERS_FILE"
+                        echo "✅ Passwordless sudo configured for sudo group"
+                    else
+                        echo "⚠️  Need sudo to configure passwordless sudo"
+                        echo "   Run: echo '$SUDOERS_CONTENT' | sudo tee $SUDOERS_FILE"
+                        echo "   Then: sudo chmod 440 $SUDOERS_FILE"
+                    fi
+                fi
+            fi
+        else
+            echo "ℹ️  Current user is not in sudo group, skipping passwordless sudo setup"
+        fi
+    else
+        echo "ℹ️  Not Debian/Ubuntu, skipping passwordless sudo setup"
+    fi
 else
-    echo "ℹ️  Could not detect OS, skipping default editor setup"
+    echo "ℹ️  Could not detect OS, skipping passwordless sudo setup"
 fi
 
 echo ""
