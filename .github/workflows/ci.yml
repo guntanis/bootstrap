@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck bootstrap.sh tests/smoke.sh
+
+      - name: shfmt
+        uses: mfinelli/setup-shfmt@v3
+      - run: shfmt -d bootstrap.sh tests/smoke.sh
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/smoke.sh
+
+  # The steps that need root, dpkg and a real sudo group cannot run on the
+  # hosted runner without changing it, so they run in a container instead.
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:stable-slim, ubuntu:latest]
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq vim sudo git openssh-client openssh-server \
+            curl ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Smoke tests
+        run: tests/smoke.sh
+
+      - name: Full run as root
+        run: |
+          ./bootstrap.sh --shell bash --editor vim --passwordless-sudo \
+            --ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcbTestTestTestTestTestTestTestTestTest ci@test"
+
+      - name: The sudoers file must be valid and correctly owned
+        run: |
+          visudo -c
+          test "$(stat -c '%a %U %G' /etc/sudoers.d/99-passwordless-sudo)" = "440 root root"
+
+      - name: update-alternatives points at vim
+        run: update-alternatives --query editor | grep -q '^Value:.*vim'
+
+      - name: An interactive shell picks up the block
+        run: |
+          bash -i -c 'test "$EDITOR" = vim' </dev/null
+          # readline prints the key either as \e[A or as M-[A depending on
+          # the build, so accept both spellings.
+          bash -i -c 'bind -q history-search-backward' </dev/null 2>/dev/null |
+            grep -qE 'e\[A|M-\[A'
+
+      - name: Running it again changes nothing
+        run: |
+          ./bootstrap.sh --shell bash --editor vim --passwordless-sudo \
+            --ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcbTestTestTestTestTestTestTestTestTest ci@test" \
+            | tee /tmp/second.log
+          grep -q 'already up to date' /tmp/second.log
+          grep -q 'already present' /tmp/second.log
+          test "$(grep -c 'managed block' ~/.bashrc)" -eq 2
+
+      - name: SSH hardening refuses without a key installed
+        run: |
+          rm -f /root/.ssh/authorized_keys
+          ./bootstrap.sh --shell bash --harden-ssh 2>&1 | tee /tmp/harden.log
+          grep -q 'refusing to disable password logins' /tmp/harden.log
+          test ! -f /etc/ssh/sshd_config.d/01-bootstrap-hardening.conf
+          sshd -T | grep -q '^passwordauthentication yes'
+
+      - name: SSH hardening applies once a key is present
+        run: |
+          ./bootstrap.sh --shell bash --harden-ssh --ssh-revert-seconds 0 \
+            --ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJcbTestTestTestTestTestTestTestTestTest ci@test"
+          # The drop-in must sort before 50-cloud-init.conf: sshd takes the
+          # FIRST value it sees for a keyword.
+          test -f /etc/ssh/sshd_config.d/01-bootstrap-hardening.conf
+          sshd -t
+          sshd -T | grep -q '^passwordauthentication no'
+          sshd -T | grep -q '^permitrootlogin without-password'
+
+      - name: A later drop-in must not override the hardening
+        run: |
+          printf 'PasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf
+          sshd -T | grep -q '^passwordauthentication no'
+          rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
+
+      - name: Hardening is idempotent
+        run: |
+          ./bootstrap.sh --shell bash --harden-ssh --ssh-revert-seconds 0 2>&1 \
+            | grep -q 'already up to date'
+
+      - name: The auto-revert restores password logins when unconfirmed
+        run: |
+          rm -f /etc/ssh/.bootstrap-ssh-confirmed /etc/ssh/sshd_config.d/01-bootstrap-hardening.conf
+          ./bootstrap.sh -q --shell bash --harden-ssh --ssh-revert-seconds 5
+          sshd -T | grep -q '^passwordauthentication no'
+          sleep 12
+          test ! -f /etc/ssh/sshd_config.d/01-bootstrap-hardening.conf
+          sshd -T | grep -q '^passwordauthentication yes'
+
+      - name: Confirming keeps the hardening in place
+        run: |
+          ./bootstrap.sh -q --shell bash --harden-ssh --ssh-revert-seconds 5
+          touch /etc/ssh/.bootstrap-ssh-confirmed
+          sleep 12
+          test -f /etc/ssh/sshd_config.d/01-bootstrap-hardening.conf
+          sshd -T | grep -q '^passwordauthentication no'
+
+      - name: Locking the root password
+        run: |
+          echo 'root:temp-password' | chpasswd
+          test "$(passwd -S root | awk '{print $2}')" = "P"
+          ./bootstrap.sh --shell bash --lock-root
+          test "$(passwd -S root | awk '{print $2}')" = "L"
+
+      - name: Non-root user in the sudo group
+        run: |
+          useradd -m -s /bin/bash dev && usermod -aG sudo dev
+          cp bootstrap.sh /home/dev/ && chown dev /home/dev/bootstrap.sh
+          su - dev -c '/home/dev/bootstrap.sh --shell bash --dry-run'
