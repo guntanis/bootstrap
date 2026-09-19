@@ -181,6 +181,30 @@ init_privilege() {
 	fi
 }
 
+# How to run a command as root here, for instructions we print. On a minimal
+# Debian install sudo is simply absent, so "run: sudo ..." would be useless.
+as_root_hint() {
+	if [ "$(id -u)" -eq 0 ]; then
+		printf '%s' "$1"
+	elif have sudo; then
+		printf 'sudo %s' "$1"
+	else
+		printf "su -c '%s'" "$1"
+	fi
+}
+
+# Printed once, the first time a step needs root and cannot get it.
+ROOT_ADVICE_SHOWN=0
+explain_no_root() {
+	[ "$ROOT_ADVICE_SHOWN" -eq 0 ] || return 0
+	ROOT_ADVICE_SHOWN=1
+	have sudo && return 0
+	note "sudo is not installed; a minimal Debian install leaves it out."
+	note "  Become root with 'su -', then:"
+	note "    apt-get install -y sudo && usermod -aG sudo $(id -un)"
+	note "  Log out and back in, and the skipped steps above will work."
+}
+
 as_root() {
 	if [ ${#ROOT_CMD[@]} -gt 0 ]; then
 		"${ROOT_CMD[@]}" "$@"
@@ -1007,7 +1031,8 @@ configure_system_editor() {
 	fi
 	if [ "$ROOT_OK" -eq 0 ]; then
 		warn "need root to set the system editor"
-		warn "  run: sudo update-alternatives --set editor $target"
+		warn "  run: $(as_root_hint "update-alternatives --set editor $target")"
+		explain_no_root
 		return
 	fi
 	if as_root update-alternatives --set editor "$target" >/dev/null 2>&1; then
@@ -1052,7 +1077,8 @@ configure_passwordless_sudo() {
 	fi
 	if [ "$ROOT_OK" -eq 0 ]; then
 		warn "need root to write $file"
-		warn "  run: echo '$content' | sudo tee $file && sudo chmod 440 $file"
+		warn "  run: echo '$content' | $(as_root_hint "tee $file") && $(as_root_hint "chmod 440 $file")"
+		explain_no_root
 		return
 	fi
 
@@ -1116,7 +1142,8 @@ configure_packages() {
 	fi
 	if [ "$ROOT_OK" -eq 0 ]; then
 		warn "need root to install packages"
-		warn "  run: sudo apt-get install -y $missing"
+		warn "  run: $(as_root_hint "apt-get install -y $missing")"
+		explain_no_root
 		return
 	fi
 
@@ -1253,6 +1280,7 @@ configure_ssh_hardening() {
 
 	if [ "$ROOT_OK" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
 		warn "need root to write $SSH_DROPIN"
+		explain_no_root
 		return
 	fi
 
@@ -1314,7 +1342,7 @@ LoginGraceTime 30"
 	else
 		warn "could not reload sshd, so the file is written but not yet active."
 		warn "  It WILL apply at the next restart. Apply it now with:"
-		warn "    sudo systemctl reload ssh"
+		warn "    $(as_root_hint "systemctl reload ssh")"
 	fi
 
 	SSH_HARDENED=1
@@ -1346,6 +1374,7 @@ configure_root_lock() {
 	if [ "$(id -u)" -ne 0 ]; then
 		if [ "$ROOT_OK" -eq 0 ]; then
 			warn "need root to lock the root password"
+			explain_no_root
 			return
 		fi
 	elif [ "$(count_keys "$HOME/.ssh/authorized_keys")" -lt 1 ] && [ "$DO_SUDO" -eq 0 ]; then
@@ -1407,7 +1436,7 @@ main() {
 		printf '  you can still log in:\n\n'
 		printf '      ssh %s@%s\n\n' "$(id -un)" "$(hostname 2>/dev/null || echo THIS-HOST)"
 		printf '  Once that works, keep the new settings:\n\n'
-		printf '      sudo touch %s\n\n' "$SSH_CONFIRM_FILE"
+		printf '      %s\n\n' "$(as_root_hint "touch $SSH_CONFIRM_FILE")"
 		printf '  Do nothing and password logins come back on their own,\n'
 		printf '  so a mistake here costs you %s seconds, not the server.\n' \
 			"$SSH_REVERT_SECONDS"

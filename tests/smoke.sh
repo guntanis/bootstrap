@@ -12,6 +12,7 @@ BOOTSTRAP="$ROOT/bootstrap.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bootstrap-tests.XXXXXX")"
 PASS=0
 FAIL=0
+SKIPPED=0
 
 trap 'rm -rf "$WORK"' EXIT
 
@@ -97,6 +98,9 @@ if command -v zsh >/dev/null 2>&1; then
 	else
 		fail "generated zsh is valid"
 	fi
+else
+	SKIPPED=$((SKIPPED + 1))
+	printf '  skip %s\n' "generated zsh is valid (zsh not installed)"
 fi
 
 H="$(new_home histsize)"
@@ -153,6 +157,10 @@ if command -v ssh-keygen >/dev/null 2>&1; then
 	check "config points at the key" "IdentitiesOnly yes" "$(cat "$H/.ssh/config")"
 	if [ -f "$H/.ssh/known_hosts" ]; then
 		check "pins github host keys" "github.com" "$(cat "$H/.ssh/known_hosts")"
+	else
+		# Needs api.github.com; say so rather than quietly dropping a test.
+		SKIPPED=$((SKIPPED + 1))
+		printf '  skip %s\n' "pins github host keys (no network?)"
 	fi
 	out="$(run "$H" --shell bash --no-history --no-editor --github-key "$WORK/key")"
 	check "re-import is idempotent" "already at" "$out"
@@ -234,6 +242,17 @@ if [ -r /etc/os-release ] && grep -qE '^(ID|ID_LIKE)=.*(debian|ubuntu)' /etc/os-
 	if [ "$(id -u)" -ne 0 ]; then
 		check "needs root to lock the root password" "need root" \
 			"$(run "$(new_home lr)" --shell bash --no-ssh --no-history --no-editor --lock-root)"
+		# On a minimal Debian there is no sudo, so "run: sudo ..." would be
+		# advice the user cannot follow.
+		if command -v sudo >/dev/null 2>&1; then
+			check "suggests sudo when sudo exists" "run: sudo apt-get install" \
+				"$(run "$(new_home hint1)" --shell bash --no-ssh --install-packages)"
+		else
+			check "suggests su when sudo is missing" "run: su -c" \
+				"$(run "$(new_home hint2)" --shell bash --no-ssh --install-packages)"
+			check "explains how to get sudo" "apt-get install -y sudo" \
+				"$(run "$(new_home hint3)" --shell bash --no-ssh --install-packages)"
+		fi
 	fi
 	if [ "$(id -u)" -eq 0 ] && [ -f /etc/ssh/sshd_config ]; then
 		check "refuses to harden without a key" "refusing to disable password logins" \
@@ -243,5 +262,5 @@ else
 	printf 'debian-only (skipped: not a Debian-like system)\n'
 fi
 
-printf '\n%s passed, %s failed\n\n' "$PASS" "$FAIL"
+printf '\n%s passed, %s failed, %s skipped\n\n' "$PASS" "$FAIL" "$SKIPPED"
 [ "$FAIL" -eq 0 ]

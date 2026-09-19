@@ -257,6 +257,24 @@ sudo passwd -u root                                         # unlock root
 
 and edit `~/.ssh/authorized_keys` to drop any key you no longer want.
 
+## If `sudo` is not installed
+
+A minimal Debian install does not include `sudo`, and if you set a root
+password during installation your user is not added to the `sudo` group
+either. The script still does everything that does not need root, and tells you
+how to run the rest.
+
+To fix it properly:
+
+```bash
+su -                                     # root's password, and mind the "-"
+apt update && apt install -y sudo
+usermod -aG sudo YOUR_USERNAME
+exit
+```
+
+Then log out and back in — group membership only applies to new sessions.
+
 ## Requirements
 
 `bash` 3.2 or newer. `curl` or `wget` for the steps that fetch keys, `git` for
