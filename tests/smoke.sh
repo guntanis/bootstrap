@@ -135,6 +135,13 @@ fi
 check "rejects a malformed key" "not a valid public key" \
 	"$(run "$(new_home badkey)" --shell bash --no-history --no-editor --ssh-key 'nonsense')"
 
+# --ssh-key-paste reads from the terminal. There is none here, so check the
+# flag is wired up and that it fails loudly rather than hanging.
+check "mentions paste when no key is given" "--ssh-key-paste" \
+	"$(run "$(new_home pastehint)" --shell bash --no-history --no-editor)"
+check "ssh-key-paste needs a terminal" "no terminal to paste into" \
+	"$(run "$(new_home nopaste)" --shell bash --no-history --no-editor --ssh-key-paste </dev/null)"
+
 printf 'github access\n'
 if command -v ssh-keygen >/dev/null 2>&1; then
 	ssh-keygen -q -t ed25519 -N '' -C 'tester@example.com' -f "$WORK/key" </dev/null

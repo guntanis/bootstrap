@@ -25,6 +25,7 @@ MARKER_END='# <<< bootstrap.sh managed block <<<'
 # --------------------------------------------------------------- defaults ---
 SSH_KEY_ARG="${BOOTSTRAP_SSH_KEY:-}"
 SSH_KEY_FILE="${BOOTSTRAP_SSH_KEY_FILE:-}"
+SSH_KEY_PASTE=0
 GITHUB_USER="${BOOTSTRAP_GITHUB_USER:-}"
 EDITOR_NAME="${BOOTSTRAP_EDITOR:-vim}"
 RC_FILE="${BOOTSTRAP_SHELL_RC:-}"
@@ -90,6 +91,7 @@ USAGE:
     curl -fsSL <raw-url>/bootstrap.sh | bash -s -- [OPTIONS]
 
 INBOUND SSH - who may log in to this machine (skipped if no key is given):
+    --ssh-key-paste        Paste public key(s) into the terminal
     --ssh-key KEY          Install this public key in ~/.ssh/authorized_keys
     --ssh-key-file PATH    Read public key(s) from PATH ("-" for stdin)
     --github-user USER     Install the keys published at github.com/USER.keys
@@ -246,6 +248,10 @@ parse_args() {
 			;;
 		--ssh-key-file=*)
 			SSH_KEY_FILE="${1#*=}"
+			shift
+			;;
+		--ssh-key-paste)
+			SSH_KEY_PASTE=1
 			shift
 			;;
 		--github-user)
@@ -583,9 +589,33 @@ http_get() {
 
 fetch_github_keys() { http_get "https://github.com/$1.keys"; }
 
+# Public keys are one line each, so a blank line ends the paste rather than
+# the BEGIN/END markers a private key has.
+read_pasted_public_keys() {
+	local line out=''
+	: 2>/dev/null </dev/tty || die "no terminal to paste into; use --ssh-key-file PATH instead"
+	{
+		printf 'Paste one or more public keys, one per line.\n'
+		printf 'Press Enter on an empty line when you are done.\n\n'
+	} >/dev/tty
+	while :; do
+		# A paste ended with Ctrl-D rather than Enter leaves a final line
+		# with no newline, which plain `read` would discard.
+		IFS= read -r line || { [ -n "$line" ] || break; }
+		line="${line%$'\r'}"
+		case "$line" in '') break ;; esac
+		out="$out$line"$'\n'
+		line=''
+	done </dev/tty
+	printf '%s' "$out"
+}
+
 collect_keys() {
 	local keys=''
 	[ -n "$SSH_KEY_ARG" ] && keys="$keys$SSH_KEY_ARG"$'\n'
+	if [ "$SSH_KEY_PASTE" -eq 1 ]; then
+		keys="$keys$(read_pasted_public_keys)"$'\n'
+	fi
 	if [ -n "$SSH_KEY_FILE" ]; then
 		if [ "$SSH_KEY_FILE" = '-' ]; then
 			keys="$keys$(cat)"$'\n'
@@ -613,15 +643,27 @@ configure_ssh() {
 		skip "disabled with --no-ssh"
 		return
 	fi
-	if [ -z "$SSH_KEY_ARG" ] && [ -z "$SSH_KEY_FILE" ] && [ -z "$GITHUB_USER" ]; then
-		skip "no key given (--ssh-key / --ssh-key-file / --github-user)"
+	if [ -z "$SSH_KEY_ARG" ] && [ -z "$SSH_KEY_FILE" ] &&
+		[ -z "$GITHUB_USER" ] && [ "$SSH_KEY_PASTE" -eq 0 ]; then
+		skip "no key given (--ssh-key-paste / --ssh-key / --ssh-key-file / --github-user)"
 		return
 	fi
 
 	local ssh_dir="$HOME/.ssh" auth_keys="$HOME/.ssh/authorized_keys"
 	local raw line added=0
 
-	raw="$(collect_keys)"
+	# Checked here, in the main shell. An assignment like k="$k$(f)" keeps
+	# status 0 even when f fails, so a die() inside collect_keys' own
+	# substitution could not stop the run.
+	if [ "$SSH_KEY_PASTE" -eq 1 ]; then
+		: 2>/dev/null </dev/tty ||
+			die "no terminal to paste into; use --ssh-key-file PATH instead"
+	fi
+	# die() inside the substitution exits only that subshell, so the
+	# status has to be checked here too.
+	if ! raw="$(collect_keys)"; then
+		exit 1
+	fi
 
 	if [ "$DRY_RUN" -eq 0 ]; then
 		mkdir -p "$ssh_dir"
@@ -675,16 +717,18 @@ EOF
 # VALUE flag: a key passed as an argument lands in shell history and in `ps`.
 read_pasted_key() {
 	local line out=''
-	[ -r /dev/tty ] || die "no terminal to paste into; use --github-key PATH instead"
+	: 2>/dev/null </dev/tty || die "no terminal to paste into; use --github-key PATH instead"
 	{
 		printf 'Paste the private key for GitHub, including the\n'
 		printf -- '-----BEGIN ... ----- and -----END ... ----- lines.\n\n'
 	} >/dev/tty
-	while IFS= read -r line; do
+	while :; do
+		IFS= read -r line || { [ -n "$line" ] || break; }
 		# Clipboards from Windows terminals carry CR; OpenSSH rejects it.
 		line="${line%$'\r'}"
 		out="$out$line"$'\n'
 		case "$line" in *'-----END '*'PRIVATE KEY-----') break ;; esac
+		line=''
 	done </dev/tty
 	printf '%s' "$out"
 }

@@ -35,19 +35,23 @@ report themselves as skipped instead of failing.
 
 ## Letting yourself log in
 
-The script installs **public** keys into `authorized_keys`. The easiest source
-is your GitHub account, which publishes them already:
+The script installs **public** keys into `authorized_keys`. Paste one straight
+into the terminal:
 
 ```bash
-./bootstrap.sh --github-user YOUR_GITHUB_USERNAME
+./bootstrap.sh --ssh-key-paste
 ```
 
-Or name the key directly:
+It takes one key per line, so you can paste several at once; press Enter on an
+empty line when you are done. The other sources:
 
 ```bash
+./bootstrap.sh --github-user YOUR_GITHUB_USERNAME        # from github.com/USER.keys
 ./bootstrap.sh --ssh-key "ssh-ed25519 AAAAC3Nza... you@laptop"
-./bootstrap.sh --ssh-key-file ~/.ssh/id_ed25519.pub
+./bootstrap.sh --ssh-key-file ~/.ssh/id_ed25519.pub      # "-" reads stdin
 ```
+
+They combine, so `--ssh-key-paste --github-user you` installs both.
 
 Anything that is not a well-formed public key line is reported and skipped, and
 a key already present is left alone — including when only its comment differs.
@@ -89,6 +93,7 @@ history and to anyone who can run `ps`.
 
 ```
 INBOUND SSH - who may log in to this machine
+    --ssh-key-paste        Paste public key(s) into the terminal
     --ssh-key KEY          Install this public key in ~/.ssh/authorized_keys
     --ssh-key-file PATH    Read public key(s) from PATH ("-" for stdin)
     --github-user USER     Install the keys published at github.com/USER.keys
